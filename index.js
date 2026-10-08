@@ -13,9 +13,11 @@ const PORT = process.env.PORT || 3000;
 
 const app = express();
 app.use(cors());
+
+// Parse raw text for /messages so MCP SDK receives a string
+app.use("/messages", express.text({ type: "application/json" }));
 app.use(express.json());
 
-// Store active SSE sessions
 const transports = new Map();
 
 function createMcpServer(req) {
@@ -31,7 +33,6 @@ function createMcpServer(req) {
     }
   );
 
-  // 1. List available tools
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     return {
       tools: [
@@ -48,17 +49,14 @@ function createMcpServer(req) {
     };
   });
 
-  // 2. Handle tool executions
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     if (request.params.name !== "solve_challenge") {
       throw new Error(`Unknown tool: ${request.params.name}`);
     }
 
-    // Retrieve headers from the current HTTP request context
     const currentReq = extra?.req || req;
     const challenge = currentReq?.headers["x-exam-challenge"] || "";
 
-    // Compute SHA-256("${challenge}:${normalizedEmail}")
     const rawString = `${challenge}:${EMAIL}`;
     const hash = crypto.createHash("sha256").update(rawString).digest("hex");
     const responseText = hash.substring(0, 16);
@@ -76,7 +74,6 @@ function createMcpServer(req) {
   return server;
 }
 
-// Handle SSE connections
 app.get("/sse", async (req, res) => {
   const transport = new SSEServerTransport("/messages", res);
   const server = createMcpServer(req);
@@ -90,7 +87,6 @@ app.get("/sse", async (req, res) => {
   await server.connect(transport);
 });
 
-// Handle incoming messages
 app.post("/messages", async (req, res) => {
   const sessionId = req.query.sessionId;
   const session = transports.get(sessionId);
@@ -99,8 +95,7 @@ app.post("/messages", async (req, res) => {
     return res.status(404).send("Session not found");
   }
 
-  // Attach current POST request so headers are accessible during tool call
-  await session.transport.handlePostMessage(req, res, { req });
+  await session.transport.handlePostMessage(req, res, req.body, { req });
 });
 
 app.listen(PORT, () => {
