@@ -12,12 +12,15 @@ const EMAIL = "24f3003188@ds.study.iitm.ac.in".trim().toLowerCase();
 const PORT = process.env.PORT || 10000;
 
 const app = express();
+
+// Enable CORS for external grader requests
 app.use(cors());
 
-// Parse raw text for /messages so MCP SDK receives raw string payload
+// Parse incoming body as raw text/string for ALL content types on /messages
 app.use("/messages", express.text({ type: "*/*" }));
 app.use(express.json());
 
+// Store dynamic session states and per-session headers
 const transports = new Map();
 
 function createMcpServer(sessionId) {
@@ -33,7 +36,7 @@ function createMcpServer(sessionId) {
     }
   );
 
-  // 1. Tool listing
+  // 1. List tools handler
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     return {
       tools: [
@@ -50,17 +53,17 @@ function createMcpServer(sessionId) {
     };
   });
 
-  // 2. Tool invocation handler
+  // 2. Execute tool handler
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (request.params.name !== "solve_challenge") {
       throw new Error(`Unknown tool: ${request.params.name}`);
     }
 
-    // Fetch stored HTTP headers from the latest POST request on this session
+    // Retrieve the headers stored from the latest POST request on this session
     const session = transports.get(sessionId);
     const headers = session?.lastHeaders || {};
 
-    // Read X-Exam-Challenge header (Express lowercases header names automatically)
+    // Express automatically lowercases header names
     const challenge = headers["x-exam-challenge"] || "";
 
     // Compute SHA-256("${challenge}:${normalizedEmail}")
@@ -81,12 +84,14 @@ function createMcpServer(sessionId) {
   return server;
 }
 
-// Handler for both /sse and root /
+// SSE Connection Handler
 const handleSse = async (req, res) => {
-  // Construct absolute message URL so the grader client connects accurately
-  const baseUrl = `${req.protocol}://${req.get("host")}`;
+  // Construct absolute URL so the grader client resolves /messages accurately
+  const host = req.get("host");
+  const protocol = req.headers["x-forwarded-proto"] || req.protocol || "https";
+  const baseUrl = `${protocol}://${host}`;
+
   const transport = new SSEServerTransport(`${baseUrl}/messages`, res);
-  
   const server = createMcpServer(transport.sessionId);
 
   transports.set(transport.sessionId, {
@@ -102,9 +107,11 @@ const handleSse = async (req, res) => {
   await server.connect(transport);
 };
 
+// Listen on both /sse and root / to prevent 404s on base endpoint checks
 app.get("/sse", handleSse);
 app.get("/", handleSse);
 
+// Handle POST messages sent by the MCP client
 app.post("/messages", async (req, res) => {
   const sessionId = req.query.sessionId;
   const session = transports.get(sessionId);
@@ -113,7 +120,7 @@ app.post("/messages", async (req, res) => {
     return res.status(404).json({ error: "Session not found" });
   }
 
-  // Update headers on every incoming tool call POST
+  // Save latest HTTP request headers on every tool call
   session.lastHeaders = req.headers;
 
   const body = typeof req.body === "string" ? req.body : JSON.stringify(req.body);
