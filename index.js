@@ -86,11 +86,10 @@ function createMcpServer(sessionId) {
 
 // SSE Connection Handler
 const handleSse = async (req, res) => {
-    // Dynamically resolve the absolute host HTTPS URL
-    const host = req.get("host");
-    const absoluteMessageUrl = `https://${host}/messages`;
+    // Hardcode the exact absolute URL
+    const absoluteMessageUrl = "https://tds-ga1-mcp-server.onrender.com/messages";
   
-    // Pass the full absolute URL to SSEServerTransport
+    // Pass the absolute URL to the transport
     const transport = new SSEServerTransport(absoluteMessageUrl, res);
     const server = createMcpServer(transport.sessionId);
   
