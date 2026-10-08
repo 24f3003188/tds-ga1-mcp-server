@@ -12,106 +12,67 @@ const EMAIL = "24f3003188@ds.study.iitm.ac.in".trim().toLowerCase();
 const PORT = process.env.PORT || 10000;
 
 const app = express();
-
-// Enable CORS for external grader requests
 app.use(cors());
 
-// Parse incoming body as raw text/string for ALL content types on /messages
-app.use("/messages", express.text({ type: "*/*" }));
+// Parse raw text for ALL routes so MCP SDK receives raw string payload
+app.use(express.text({ type: "*/*" }));
 app.use(express.json());
 
-// Store dynamic session states and per-session headers
 const transports = new Map();
 
 function createMcpServer(sessionId) {
   const server = new Server(
-    {
-      name: "exam-mcp-server",
-      version: "1.0.0",
-    },
-    {
-      capabilities: {
-        tools: {},
-      },
-    }
+    { name: "exam-mcp-server", version: "1.0.0" },
+    { capabilities: { tools: {} } }
   );
 
-  // 1. List tools handler
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     return {
       tools: [
         {
           name: "solve_challenge",
           description: "Solves the exam header verification challenge",
-          inputSchema: {
-            type: "object",
-            properties: {},
-            required: [],
-          },
+          inputSchema: { type: "object", properties: {}, required: [] },
         },
       ],
     };
   });
 
-  // 2. Execute tool handler
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (request.params.name !== "solve_challenge") {
       throw new Error(`Unknown tool: ${request.params.name}`);
     }
 
-    // Retrieve the headers stored from the latest POST request on this session
     const session = transports.get(sessionId);
     const headers = session?.lastHeaders || {};
-
-    // Express automatically lowercases header names
     const challenge = headers["x-exam-challenge"] || "";
 
-    // Compute SHA-256("${challenge}:${normalizedEmail}")
     const rawString = `${challenge}:${EMAIL}`;
     const hash = crypto.createHash("sha256").update(rawString).digest("hex");
     const responseText = hash.substring(0, 16);
 
-    return {
-      content: [
-        {
-          type: "text",
-          text: responseText,
-        },
-      ],
-    };
+    return { content: [{ type: "text", text: responseText }] };
   });
 
   return server;
 }
 
-// SSE Connection Handler
 const handleSse = async (req, res) => {
-    // Hardcode the exact absolute URL
-    const absoluteMessageUrl = "https://tds-ga1-mcp-server.onrender.com/messages";
-  
-    // Pass the absolute URL to the transport
-    const transport = new SSEServerTransport(absoluteMessageUrl, res);
-    const server = createMcpServer(transport.sessionId);
-  
-    transports.set(transport.sessionId, {
-      transport,
-      server,
-      lastHeaders: req.headers,
-    });
-  
-    transport.onclose = () => {
-      transports.delete(transport.sessionId);
-    };
-  
-    await server.connect(transport);
+  // Hardcode the absolute URL just to be absolutely certain
+  const transport = new SSEServerTransport("https://tds-ga1-mcp-server.onrender.com/messages", res);
+  const server = createMcpServer(transport.sessionId);
+
+  transports.set(transport.sessionId, { transport, server, lastHeaders: req.headers });
+
+  transport.onclose = () => transports.delete(transport.sessionId);
+  await server.connect(transport);
 };
 
-// Listen on both /sse and root / to prevent 404s on base endpoint checks
-app.get("/sse", handleSse);
-app.get("/", handleSse);
+// Accept GET requests on /sse and /
+app.get(["/sse", "/"], handleSse);
 
-// Handle POST messages sent by the MCP client
-app.post("/messages", async (req, res) => {
+// CATCH-ALL POST ROUTE: Catches /messages, /sse/messages, or anything else to prevent 404s
+app.post("*", async (req, res) => {
   const sessionId = req.query.sessionId;
   const session = transports.get(sessionId);
 
@@ -119,13 +80,11 @@ app.post("/messages", async (req, res) => {
     return res.status(404).json({ error: "Session not found" });
   }
 
-  // Save latest HTTP request headers on every tool call
+  // Preserve request headers from the tool call POST request
   session.lastHeaders = req.headers;
 
   const body = typeof req.body === "string" ? req.body : JSON.stringify(req.body);
   await session.transport.handlePostMessage(req, res, body);
 });
 
-app.listen(PORT, () => {
-  console.log(`MCP Server running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`MCP Server running on port ${PORT}`));
