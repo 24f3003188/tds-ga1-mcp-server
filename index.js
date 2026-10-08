@@ -86,25 +86,25 @@ function createMcpServer(sessionId) {
 
 // SSE Connection Handler
 const handleSse = async (req, res) => {
-  // Construct absolute URL so the grader client resolves /messages accurately
-  const host = req.get("host");
-  const protocol = req.headers["x-forwarded-proto"] || req.protocol || "https";
-  const baseUrl = `${protocol}://${host}`;
-
-  const transport = new SSEServerTransport(`${baseUrl}/messages`, res);
-  const server = createMcpServer(transport.sessionId);
-
-  transports.set(transport.sessionId, {
-    transport,
-    server,
-    lastHeaders: req.headers,
-  });
-
-  transport.onclose = () => {
-    transports.delete(transport.sessionId);
-  };
-
-  await server.connect(transport);
+    // Dynamically resolve the absolute host HTTPS URL
+    const host = req.get("host");
+    const absoluteMessageUrl = `https://${host}/messages`;
+  
+    // Pass the full absolute URL to SSEServerTransport
+    const transport = new SSEServerTransport(absoluteMessageUrl, res);
+    const server = createMcpServer(transport.sessionId);
+  
+    transports.set(transport.sessionId, {
+      transport,
+      server,
+      lastHeaders: req.headers,
+    });
+  
+    transport.onclose = () => {
+      transports.delete(transport.sessionId);
+    };
+  
+    await server.connect(transport);
 };
 
 // Listen on both /sse and root / to prevent 404s on base endpoint checks
