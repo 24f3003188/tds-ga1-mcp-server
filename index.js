@@ -13,14 +13,15 @@ const PORT = process.env.PORT || 10000;
 
 const app = express();
 app.use(cors());
-
-// Parse raw text for ALL routes so MCP SDK receives raw string payload
+// Parse all POST payloads as strings so the MCP SDK handles them natively
 app.use(express.text({ type: "*/*" }));
 app.use(express.json());
 
-const transports = new Map();
+// GLOBAL STATE: Completely bypasses sessionId routing issues
+let activeTransport = null;
+let activeHeaders = {};
 
-function createMcpServer(sessionId) {
+function createMcpServer() {
   const server = new Server(
     { name: "exam-mcp-server", version: "1.0.0" },
     { capabilities: { tools: {} } }
@@ -43,48 +44,47 @@ function createMcpServer(sessionId) {
       throw new Error(`Unknown tool: ${request.params.name}`);
     }
 
-    const session = transports.get(sessionId);
-    const headers = session?.lastHeaders || {};
-    const challenge = headers["x-exam-challenge"] || "";
+    // Always read from the globally tracked headers updated on the latest POST
+    const challenge = activeHeaders["x-exam-challenge"] || "";
 
     const rawString = `${challenge}:${EMAIL}`;
     const hash = crypto.createHash("sha256").update(rawString).digest("hex");
-    const responseText = hash.substring(0, 16);
 
-    return { content: [{ type: "text", text: responseText }] };
+    return {
+      content: [{ type: "text", text: hash.substring(0, 16) }],
+    };
   });
 
   return server;
 }
 
 const handleSse = async (req, res) => {
-  // Hardcode the absolute URL just to be absolutely certain
-  const transport = new SSEServerTransport("https://tds-ga1-mcp-server.onrender.com/messages", res);
-  const server = createMcpServer(transport.sessionId);
+  const transport = new SSEServerTransport("/messages", res);
+  const server = createMcpServer();
 
-  transports.set(transport.sessionId, { transport, server, lastHeaders: req.headers });
+  // Overwrite the global state with the active grading session
+  activeTransport = transport;
+  activeHeaders = req.headers;
 
-  transport.onclose = () => transports.delete(transport.sessionId);
   await server.connect(transport);
 };
 
-// Accept GET requests on /sse and /
+// Listen on both /sse and /
 app.get(["/sse", "/"], handleSse);
 
-// CATCH-ALL POST ROUTE: Catches /messages, /sse/messages, or anything else to prevent 404s
+// CATCH-ALL POST ROUTE: Accepts the request regardless of path or missing sessionId
 app.post("*", async (req, res) => {
-  const sessionId = req.query.sessionId;
-  const session = transports.get(sessionId);
-
-  if (!session) {
-    return res.status(404).json({ error: "Session not found" });
+  if (!activeTransport) {
+    return res.status(400).send("SSE connection not established yet");
   }
 
-  // Preserve request headers from the tool call POST request
-  session.lastHeaders = req.headers;
+  // Update global headers so the tool call has the freshest X-Exam-Challenge
+  activeHeaders = req.headers;
 
   const body = typeof req.body === "string" ? req.body : JSON.stringify(req.body);
-  await session.transport.handlePostMessage(req, res, body);
+  await activeTransport.handlePostMessage(req, res, body);
 });
 
-app.listen(PORT, () => console.log(`MCP Server running on port ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`MCP Server running on port ${PORT}`);
+});
